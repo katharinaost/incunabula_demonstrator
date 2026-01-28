@@ -4,9 +4,11 @@ import unicodedata
 import pandas as pd
 import numpy as np
 from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, DataCollatorForSeq2Seq, Seq2SeqTrainer, Seq2SeqTrainingArguments, EarlyStoppingCallback
+from transformers import T5ForConditionalGeneration, AutoTokenizer, DataCollatorForSeq2Seq, Seq2SeqTrainer, Seq2SeqTrainingArguments, EarlyStoppingCallback
 from Levenshtein import distance
 from evaluate import load
+
+exact_match_metric = load("exact_match")
 
 model_name = "google/byt5-small"
 max_input = 256
@@ -93,7 +95,6 @@ def compute_metrics(eval_pred):
 
     # metrics
     cer_val = cer(pred_texts, label_texts)
-    exact_match_metric = load("exact_match")
     exact = exact_match_metric.compute(predictions=pred_texts, references=label_texts)
     exact = exact["exact_match"]
     return {"cer": cer_val, "exact_match": exact}
@@ -104,7 +105,7 @@ def main(args):
 
     global tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    model = T5ForConditionalGeneration.from_pretrained(model_name, tie_word_embeddings=False)
 
     tokenized = ds.map(preprocess, batched=True, remove_columns=ds["train"].column_names)
     collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
@@ -117,7 +118,7 @@ def main(args):
         metric_for_best_model="cer",
         greater_is_better=False,
         learning_rate=1e-4,
-        warmup_ratio=0.1,
+        warmup_steps=400,
         per_device_train_batch_size=8,
         per_device_eval_batch_size=2,
         num_train_epochs=15,
@@ -140,7 +141,7 @@ def main(args):
         train_dataset=tokenized["train"],
         eval_dataset=tokenized["validation"],
         data_collator=collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(
             early_stopping_patience=3,  

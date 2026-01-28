@@ -3,6 +3,8 @@ import os
 import unicodedata
 import pandas as pd
 import numpy as np
+import math
+from concurrent.futures import ThreadPoolExecutor
 from datasets import Dataset, DatasetDict
 from transformers import T5ForConditionalGeneration, AutoTokenizer, DataCollatorForSeq2Seq, Seq2SeqTrainer, Seq2SeqTrainingArguments, EarlyStoppingCallback
 from Levenshtein import distance
@@ -53,12 +55,12 @@ def preprocess(batch):
         batch["text"],
         truncation=True,
         max_length = max_input,
-    )
+    ).to(model.device)
     labels = tokenizer(
         text_target = batch["label"],
         truncation = True,
         max_length = max_target,
-    )
+    ).to(model.device)
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
@@ -80,14 +82,17 @@ def compute_metrics(eval_pred):
         preds = preds[0]
 
     # replace negative ids (-100) with pad
-    labels = np.array(labels)
     labels = np.where(labels >= 0, labels, tokenizer.pad_token_id)
-    preds = np.array(preds)
     preds = np.where(preds >= 0, preds, tokenizer.pad_token_id)
+    preds_list = preds.tolist()
+    labels_list = labels.tolist()
 
-    # decode
-    pred_texts = tokenizer.batch_decode(preds, skip_special_tokens=True)
-    label_texts = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    # decode - run both in parallel
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pred_future = executor.submit(tokenizer.batch_decode, preds_list, skip_special_tokens=True)
+        label_future = executor.submit(tokenizer.batch_decode, labels_list, skip_special_tokens=True)
+        pred_texts = pred_future.result()
+        label_texts = label_future.result()
 
     # clean
     pred_texts  = [p.strip() for p in pred_texts]
@@ -101,15 +106,17 @@ def compute_metrics(eval_pred):
 
 
 def main(args):
+    global tokenizer, model
+    
     ds = prepare_datasets(args.data)
 
-    global tokenizer
+    model = T5ForConditionalGeneration.from_pretrained(model_name, tie_word_embeddings=False, device_map='auto')
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    model = T5ForConditionalGeneration.from_pretrained(model_name, tie_word_embeddings=False)
 
     tokenized = ds.map(preprocess, batched=True, remove_columns=ds["train"].column_names)
     collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
 
+    batch_size_multiplier = 4  # 7.3 GB VRAM utilization on RTX 4060
     training_args = Seq2SeqTrainingArguments(
         output_dir="byt5-latin-expander",
         eval_strategy="epoch",
@@ -117,15 +124,15 @@ def main(args):
         load_best_model_at_end=True,
         metric_for_best_model="cer",
         greater_is_better=False,
-        learning_rate=1e-4,
-        warmup_steps=400,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=2,
+        learning_rate=1e-4*math.sqrt(batch_size_multiplier),
+        warmup_steps=(int)(400//batch_size_multiplier),
+        per_device_train_batch_size=8*batch_size_multiplier,
+        per_device_eval_batch_size=8,
         num_train_epochs=15,
         weight_decay=0.01,
         bf16=True,  # necessary to avoid gradient overflow
         fp16=False,
-        logging_steps=100,
+        logging_steps=(int)(100//batch_size_multiplier),
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         predict_with_generate=True,

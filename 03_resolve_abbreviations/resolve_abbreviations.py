@@ -11,11 +11,13 @@ def load_lines(path: Path):
         return f.read().splitlines()
 
 def save_txt(path: Path, preds):
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for prediction in preds:
             f.write(prediction + "\n")
     
 def save_tsv(path: Path, inputs, preds):
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         f.write("input\tprediction\n")
         for input, prediction in zip(inputs, preds):
@@ -45,7 +47,7 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_dir).to(device)
+    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_dir, tie_word_embeddings=False).to(device)
     model.eval() # set inference mode
 
     inputs = load_lines(input_path)

@@ -4,7 +4,7 @@ Transcriptions from the Latin part of [Training Data Incunabula Reichenau](https
 
 ```
 03_resolve_abbreviations/data/
-  round_truth.csv      manually corrected ground truth
+  ground_truth.csv      manually corrected ground truth
   synthetic_data.csv   data that has been annotated by Claude Sonnet 5
   splits_paper/        train/val/test split used in the paper
 ```

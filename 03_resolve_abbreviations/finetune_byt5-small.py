@@ -4,7 +4,6 @@ import unicodedata
 import pandas as pd
 import numpy as np
 import math
-from concurrent.futures import ThreadPoolExecutor
 from datasets import Dataset, DatasetDict
 from transformers import T5ForConditionalGeneration, AutoTokenizer, DataCollatorForSeq2Seq, Seq2SeqTrainer, Seq2SeqTrainingArguments, EarlyStoppingCallback
 from Levenshtein import distance
@@ -72,31 +71,22 @@ def cer(preds, refs):
         total_len  += max(1,len(r))
     return total_dist/total_len
 
+def byt5_decode(token_rows):
+    # Fast decode for ByT5 token ids.
+
+    return [bytes(i - 3 for i in row if 3 <= i < 259).decode("utf-8", errors="ignore").strip()
+            for row in token_rows]
+
 def compute_metrics(eval_pred):
-    # requires global tokenizer variable to be set
-    
     preds, labels = eval_pred
 
     # extract generated tokens if tuple
     if isinstance(preds, tuple):
         preds = preds[0]
 
-    # replace negative ids (-100) with pad
-    labels = np.where(labels >= 0, labels, tokenizer.pad_token_id)
-    preds = np.where(preds >= 0, preds, tokenizer.pad_token_id)
-    preds_list = preds.tolist()
-    labels_list = labels.tolist()
-
-    # decode - run both in parallel
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        pred_future = executor.submit(tokenizer.batch_decode, preds_list, skip_special_tokens=True)
-        label_future = executor.submit(tokenizer.batch_decode, labels_list, skip_special_tokens=True)
-        pred_texts = pred_future.result()
-        label_texts = label_future.result()
-
-    # clean
-    pred_texts  = [p.strip() for p in pred_texts]
-    label_texts = [l.strip() for l in label_texts]
+    # byt5_decode skips special ids (incl. the -100 label padding and pad tokens) itself
+    pred_texts  = byt5_decode(preds.tolist())
+    label_texts = byt5_decode(labels.tolist())
 
     # metrics
     cer_val = cer(pred_texts, label_texts)

@@ -4,6 +4,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from tqdm import tqdm
 
+max_input = 256  # must match training truncation length
 max_new_tokens = 256
 
 def load_lines(path: Path):
@@ -23,22 +24,31 @@ def save_tsv(path: Path, inputs, preds):
         for input, prediction in zip(inputs, preds):
             f.write(f"{input}\t{prediction}\n")
 
-def expand_line(model, tokenizer, device, text):
-    # keep blank lines
-    if text.strip() == "":
-        return ""
+def expand_lines(model, tokenizer, device, lines, batch_size):
+    # keep blank lines in place, only send the rest to the model
+    indices = [i for i, line in enumerate(lines) if line.strip() != ""]
+    predictions = ["" for _ in lines]
 
-    enc = tokenizer(text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        out = model.generate(
-            **enc,
-            max_new_tokens=max_new_tokens,
-            repetition_penalty=0.8,
-            num_beams=4
-        )
+    for start in tqdm(range(0, len(indices), batch_size)):
+        batch_indices = indices[start:start + batch_size]
+        enc = tokenizer(
+            [lines[i] for i in batch_indices],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_input,
+        ).to(device)
+        with torch.no_grad():
+            out = model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                num_beams=4
+            )
+        decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
+        for i, prediction in zip(batch_indices, decoded):
+            predictions[i] = prediction.strip()
 
-    output = tokenizer.decode(out[0], skip_special_tokens=True).strip()
-    return output
+    return predictions
 
 def main(args):
     input_path = Path(args.input)
@@ -51,10 +61,7 @@ def main(args):
     model.eval() # set inference mode
 
     inputs = load_lines(input_path)
-    predictions = [
-        expand_line(model, tokenizer, device, line)
-        for line in tqdm(inputs)
-    ]
+    predictions = expand_lines(model, tokenizer, device, inputs, args.batch_size)
 
     suffix = ".expanded.tsv" if args.tsv else ".expanded.txt"
     output_path = Path(f"{output_path}/{input_path.stem}{suffix}")
@@ -72,5 +79,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="output", help="Output directory for TXT or TSV files.")
     parser.add_argument("--model-dir", default="byt5-latin-expander/final", help="Directory with the fine-tuned model.")
     parser.add_argument("--tsv", action="store_true", help="Write a TSV file with input and prediction instead of plain text.")
+    parser.add_argument("--batch-size", type=int, default=16, help="Number of lines to expand per model call.")
     args = parser.parse_args()
     main(args)
